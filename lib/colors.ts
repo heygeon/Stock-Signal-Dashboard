@@ -14,6 +14,8 @@ export const COLORS = {
   wickDown: "#ff5d73",
   stop: "#ff5d73",
   target: "#8eb6ff",
+  /** Matches the gold primary token. The swept level is drawn with this. */
+  swept: "#e4c56a",
   cross: "#f0a202",
   labelInk: "#14181f",
 } as const

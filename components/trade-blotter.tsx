@@ -2,8 +2,8 @@
 
 import { Badge } from "@/components/ui/badge"
 import { barsHeld, formatDate, formatPct, formatPrice } from "@/lib/format"
-import { EXIT_LABEL } from "@/lib/strategy"
-import type { ExitReason, Trade } from "@/lib/types"
+import { EXIT_LABEL, positionReturn } from "@/lib/strategy"
+import type { ExitReason, StrategyId, Trade } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 function reasonVariant(reason: ExitReason | null): "buy" | "cross" | "stop" | "target" {
@@ -20,6 +20,8 @@ export function TradeBlotter({
   lastIndex,
   levelsId,
   onSelect,
+  strategy,
+  emptyMessage,
 }: {
   trades: Trade[]
   currency: string
@@ -27,7 +29,15 @@ export function TradeBlotter({
   lastIndex: number
   levelsId: number | null
   onSelect: (id: number) => void
+  strategy: StrategyId
+  emptyMessage?: string
 }) {
+  const sweep = strategy === "sweep"
+  const empty =
+    emptyMessage ??
+    (sweep
+      ? "No volume-confirmed sweep in this window. A session has to take out the prior swing, close back through that level, and do it on at least the volume multiple."
+      : "No fresh crossover in this window. The fast EMA has to finish a session at or below the slow EMA, then close above it.")
   return (
     <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-end justify-between gap-2 border-b border-border px-4 py-3">
@@ -39,21 +49,25 @@ export function TradeBlotter({
         </div>
       </div>
       {trades.length === 0 ? (
-        <p className="px-4 py-8 text-sm text-muted-foreground">
-          No fresh crossover in this window. The fast EMA has to finish a session at or below the slow EMA, then close
-          above it.
-        </p>
+        <p className="px-4 py-8 text-sm text-muted-foreground">{empty}</p>
       ) : (
         <div className="blotter-scroll overflow-x-auto">
-          <table className="w-full min-w-[980px] border-collapse text-sm">
+          <table className={cn("w-full border-collapse text-sm", sweep ? "min-w-[1080px]" : "min-w-[980px]")}>
             <caption className="sr-only">
-              Signal trades with entry, exit, reason, stop, target, and close-to-close return.
+              {sweep
+                ? "Signal trades with side, entry, exit, swept level, stop, target, and close-to-close return."
+                : "Signal trades with entry, exit, reason, stop, target, and close-to-close return."}
             </caption>
             <thead>
               <tr className="text-left text-[11px] tracking-[0.12em] text-muted-foreground uppercase">
                 <th className="px-4 py-2 font-medium" scope="col">
                   #
                 </th>
+                {sweep ? (
+                  <th className="px-3 py-2 font-medium" scope="col">
+                    Side
+                  </th>
+                ) : null}
                 <th className="px-3 py-2 font-medium" scope="col">
                   Entry
                 </th>
@@ -61,7 +75,7 @@ export function TradeBlotter({
                   Price
                 </th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">
-                  ATR
+                  {sweep ? "Swept" : "ATR"}
                 </th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">
                   Stop
@@ -90,8 +104,9 @@ export function TradeBlotter({
               {trades.map((trade) => {
                 const unrealized = trade.exitPrice == null
                 const exitPrice = trade.exitPrice ?? lastClose
-                const change = (exitPrice - trade.entryPrice) / trade.entryPrice
+                const change = positionReturn(trade, exitPrice)
                 const onChart = trade.id === levelsId
+                const short = trade.direction === "short"
                 return (
                   <tr
                     key={trade.id}
@@ -114,9 +129,20 @@ export function TradeBlotter({
                       {trade.id}
                       {onChart ? <span className="ml-2 text-primary">On chart</span> : null}
                     </td>
+                    {sweep ? (
+                      <td className="px-3 py-2.5">
+                        <Badge variant={short ? "short" : "long"}>{short ? "Short" : "Long"}</Badge>
+                      </td>
+                    ) : null}
                     <td className="px-3 py-2.5 font-mono text-xs">{formatDate(trade.entryDate)}</td>
                     <td className="px-3 py-2.5 text-right font-mono">{formatPrice(trade.entryPrice, currency)}</td>
-                    <td className="px-3 py-2.5 text-right font-mono">{formatPrice(trade.atrAtEntry, currency)}</td>
+                    <td className="px-3 py-2.5 text-right font-mono">
+                      {sweep
+                        ? trade.sweptLevel == null
+                          ? "—"
+                          : formatPrice(trade.sweptLevel, currency)
+                        : formatPrice(trade.atrAtEntry, currency)}
+                    </td>
                     <td className="px-3 py-2.5 text-right font-mono text-stop">{formatPrice(trade.stop, currency)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-target">
                       {formatPrice(trade.target, currency)}
@@ -129,7 +155,7 @@ export function TradeBlotter({
                     </td>
                     <td className="px-3 py-2.5">
                       {unrealized ? (
-                        <Badge variant="long">Open</Badge>
+                        <Badge variant={short ? "short" : "long"}>Open</Badge>
                       ) : (
                         <Badge variant={reasonVariant(trade.exitReason)}>
                           {trade.exitReason ? EXIT_LABEL[trade.exitReason] : "—"}

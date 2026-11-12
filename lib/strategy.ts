@@ -243,12 +243,19 @@ export function generateSignals(bars: Bar[], params: StrategyParams): SignalResu
   }
 }
 
+/**
+ * Close-to-close return of a signal. EMA trades omit direction and stay
+ * long-only: a higher exit is a win. A short wins when the exit is lower.
+ */
+export function positionReturn(trade: Pick<Trade, "entryPrice" | "direction">, price: number): number {
+  const raw = (price - trade.entryPrice) / trade.entryPrice
+  return trade.direction === "short" ? -raw : raw
+}
+
 export function summarizeTrades(trades: Trade[], lastClose: number): TradeSummary {
   const closed = trades.filter((trade) => trade.exitPrice != null)
-  const wins = closed.filter((trade) => (trade.exitPrice as number) > trade.entryPrice)
-  const returns = closed.map(
-    (trade) => ((trade.exitPrice as number) - trade.entryPrice) / trade.entryPrice,
-  )
+  const returns = closed.map((trade) => positionReturn(trade, trade.exitPrice as number))
+  const wins = returns.filter((value) => value > 0)
   const open = trades.find((trade) => trade.exitPrice == null) ?? null
   return {
     entries: trades.length,
@@ -257,6 +264,6 @@ export function summarizeTrades(trades: Trade[], lastClose: number): TradeSummar
     winRate: closed.length > 0 ? wins.length / closed.length : null,
     avgReturn: returns.length > 0 ? returns.reduce((sum, value) => sum + value, 0) / returns.length : null,
     open,
-    unrealized: open && Number.isFinite(lastClose) ? (lastClose - open.entryPrice) / open.entryPrice : null,
+    unrealized: open && Number.isFinite(lastClose) ? positionReturn(open, lastClose) : null,
   }
 }
