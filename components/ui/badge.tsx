@@ -10,6 +10,7 @@ const badgeVariants = cva(
         default: "border-transparent bg-primary text-primary-foreground",
         outline: "border-border text-muted-foreground",
         long: "border-ema-fast/40 bg-ema-fast/10 text-ema-fast",
+        short: "border-stop/40 bg-stop/10 text-stop",
         flat: "border-border bg-white/5 text-muted-foreground",
         stop: "border-stop/40 bg-stop/10 text-stop",
         target: "border-target/40 bg-target/10 text-target",

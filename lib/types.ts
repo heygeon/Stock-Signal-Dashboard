@@ -19,12 +19,22 @@ export type Quote = {
   bars: Bar[]
 }
 
+export type StrategyId = "ema" | "sweep"
+
 export type StrategyParams = {
   fastPeriod: number
   slowPeriod: number
   atrPeriod: number
   stopMultiplier: number
   takeProfitMultiplier: number
+}
+
+export type SweepParams = {
+  swingLookback: number
+  volumePeriod: number
+  volumeMultiple: number
+  takeProfitMultiple: number
+  stopOffset: number
 }
 
 export type ExitReason = "ema_cross" | "stop" | "take_profit"
@@ -34,6 +44,8 @@ export type EnrichedBar = Bar & {
   emaSlow: number | null
   atr: number | null
 }
+
+export type TradeDirection = "long" | "short"
 
 export type Trade = {
   id: number
@@ -47,6 +59,10 @@ export type Trade = {
   exitDate: string | null
   exitPrice: number | null
   exitReason: ExitReason | null
+  /** Absent on EMA trades, which are long-only. */
+  direction?: TradeDirection
+  /** Level that was swept and reclaimed. Absent on EMA trades. */
+  sweptLevel?: number | null
 }
 
 export type SignalMarker = {
@@ -54,6 +70,8 @@ export type SignalMarker = {
   side: "entry" | "exit"
   label: string
   reason: ExitReason | null
+  /** Absent on EMA markers, which are long-only. */
+  direction?: TradeDirection
 }
 
 export type SignalResult = {
@@ -61,6 +79,8 @@ export type SignalResult = {
   trades: Trade[]
   markers: SignalMarker[]
   levelsTrade: Trade | null
+  /** Set when a strategy cannot run, for example a sweep with no volume. */
+  error?: string | null
 }
 
 export type TradeSummary = {

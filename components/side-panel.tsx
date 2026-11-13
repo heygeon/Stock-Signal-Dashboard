@@ -10,7 +10,9 @@ import { Slider } from "@/components/ui/slider"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { formatPct, formatPrice } from "@/lib/format"
 import { DEFAULT_PARAMS } from "@/lib/strategy"
-import type { StrategyParams, TradeSummary } from "@/lib/types"
+import { DEFAULT_SWEEP_PARAMS } from "@/lib/sweep"
+import type { StrategyId, StrategyParams, SweepParams, TradeSummary } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 const DEMOS = ["AAPL", "0700.HK"] as const
 
@@ -25,7 +27,8 @@ type FieldProps = {
 }
 
 function Field({ id, label, value, min, max, step, onChange }: FieldProps) {
-  const display = step < 1 ? value.toFixed(1) : String(value)
+  const digits = step < 0.1 ? 2 : step < 1 ? 1 : 0
+  const display = digits === 0 ? String(value) : value.toFixed(digits)
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -90,29 +93,91 @@ function sameParams(a: StrategyParams, b: StrategyParams): boolean {
   )
 }
 
+function sameSweep(a: SweepParams, b: SweepParams): boolean {
+  return (
+    a.swingLookback === b.swingLookback &&
+    a.volumePeriod === b.volumePeriod &&
+    a.volumeMultiple === b.volumeMultiple &&
+    a.takeProfitMultiple === b.takeProfitMultiple &&
+    a.stopOffset === b.stopOffset
+  )
+}
+
+export function StrategySwitch({
+  strategy,
+  onStrategy,
+  labelled = false,
+  className,
+}: {
+  strategy: StrategyId
+  onStrategy: (strategy: StrategyId) => void
+  labelled?: boolean
+  className?: string
+}) {
+  return (
+    <div
+      className={cn("grid grid-cols-2 gap-1", className)}
+      role="group"
+      aria-label="Strategy"
+      data-testid={labelled ? "strategy-switcher" : undefined}
+    >
+      <Button
+        type="button"
+        size="sm"
+        variant={strategy === "ema" ? "default" : "outline"}
+        aria-pressed={strategy === "ema"}
+        data-testid={labelled ? "strategy-ema" : undefined}
+        onClick={() => onStrategy("ema")}
+      >
+        20/50 EMA
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant={strategy === "sweep" ? "default" : "outline"}
+        aria-pressed={strategy === "sweep"}
+        data-testid={labelled ? "strategy-sweep" : undefined}
+        onClick={() => onStrategy("sweep")}
+      >
+        Volume sweep
+      </Button>
+    </div>
+  )
+}
+
 export function SidePanel({
   draft,
   symbol,
   symbolError,
-  params,
+  strategy,
+  emaParams,
+  sweepParams,
   summary,
   currency,
+  notice,
   onDraft,
   onSubmit,
   onPick,
-  onParams,
+  onStrategy,
+  onEmaParams,
+  onSweepParams,
   onReset,
 }: {
   draft: string
   symbol: string
   symbolError: string | null
-  params: StrategyParams
+  strategy: StrategyId
+  emaParams: StrategyParams
+  sweepParams: SweepParams
   summary: TradeSummary | null
   currency: string
+  notice: string | null
   onDraft: (value: string) => void
   onSubmit: () => void
   onPick: (symbol: string) => void
-  onParams: (patch: Partial<StrategyParams>) => void
+  onStrategy: (strategy: StrategyId) => void
+  onEmaParams: (patch: Partial<StrategyParams>) => void
+  onSweepParams: (patch: Partial<SweepParams>) => void
   onReset: () => void
 }) {
   const winRate = summary?.winRate == null ? "—" : `${Math.round(summary.winRate * 100)}%`
@@ -166,65 +231,133 @@ export function SidePanel({
       <section className="rounded-xl border border-border bg-card p-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-medium">Strategy</h2>
-          <Button type="button" size="sm" variant="ghost" onClick={onReset} disabled={sameParams(params, DEFAULT_PARAMS)}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onReset}
+            disabled={strategy === "sweep" ? sameSweep(sweepParams, DEFAULT_SWEEP_PARAMS) : sameParams(emaParams, DEFAULT_PARAMS)}
+          >
             Reset
           </Button>
         </div>
-        <div className="mt-4 space-y-4">
-          <Field
-            id="fast-ema"
-            label="Fast EMA"
-            value={params.fastPeriod}
-            min={2}
-            max={Math.max(2, params.slowPeriod - 1)}
-            step={1}
-            onChange={(value) => onParams({ fastPeriod: value })}
-          />
-          <Field
-            id="slow-ema"
-            label="Slow EMA"
-            value={params.slowPeriod}
-            min={params.fastPeriod + 1}
-            max={250}
-            step={1}
-            onChange={(value) => onParams({ slowPeriod: value })}
-          />
-          <Field
-            id="atr-period"
-            label="ATR period"
-            value={params.atrPeriod}
-            min={2}
-            max={50}
-            step={1}
-            onChange={(value) => onParams({ atrPeriod: value })}
-          />
-          <Field
-            id="stop-mult"
-            label="Stop × ATR"
-            value={params.stopMultiplier}
-            min={0.5}
-            max={6}
-            step={0.1}
-            onChange={(value) => onParams({ stopMultiplier: value })}
-          />
-          <Field
-            id="target-mult"
-            label="Target × ATR"
-            value={params.takeProfitMultiplier}
-            min={0.5}
-            max={10}
-            step={0.1}
-            onChange={(value) => onParams({ takeProfitMultiplier: value })}
-          />
-        </div>
+        <StrategySwitch strategy={strategy} onStrategy={onStrategy} labelled className="mt-4" />
+        {strategy === "sweep" ? (
+          <div className="mt-4 space-y-4">
+            <Field
+              id="swing-lookback"
+              label="Swing lookback"
+              value={sweepParams.swingLookback}
+              min={2}
+              max={60}
+              step={1}
+              onChange={(value) => onSweepParams({ swingLookback: value })}
+            />
+            <Field
+              id="volume-period"
+              label="Volume average"
+              value={sweepParams.volumePeriod}
+              min={2}
+              max={120}
+              step={1}
+              onChange={(value) => onSweepParams({ volumePeriod: value })}
+            />
+            <Field
+              id="volume-multiple"
+              label="Volume × average"
+              value={sweepParams.volumeMultiple}
+              min={1}
+              max={5}
+              step={0.1}
+              onChange={(value) => onSweepParams({ volumeMultiple: value })}
+            />
+            <Field
+              id="risk-multiple"
+              label="Target × risk"
+              value={sweepParams.takeProfitMultiple}
+              min={0.5}
+              max={10}
+              step={0.1}
+              onChange={(value) => onSweepParams({ takeProfitMultiple: value })}
+            />
+            <Field
+              id="stop-offset"
+              label="Stop offset"
+              value={sweepParams.stopOffset}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(value) => onSweepParams({ stopOffset: value })}
+            />
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            <Field
+              id="fast-ema"
+              label="Fast EMA"
+              value={emaParams.fastPeriod}
+              min={2}
+              max={Math.max(2, emaParams.slowPeriod - 1)}
+              step={1}
+              onChange={(value) => onEmaParams({ fastPeriod: value })}
+            />
+            <Field
+              id="slow-ema"
+              label="Slow EMA"
+              value={emaParams.slowPeriod}
+              min={emaParams.fastPeriod + 1}
+              max={250}
+              step={1}
+              onChange={(value) => onEmaParams({ slowPeriod: value })}
+            />
+            <Field
+              id="atr-period"
+              label="ATR period"
+              value={emaParams.atrPeriod}
+              min={2}
+              max={50}
+              step={1}
+              onChange={(value) => onEmaParams({ atrPeriod: value })}
+            />
+            <Field
+              id="stop-mult"
+              label="Stop × ATR"
+              value={emaParams.stopMultiplier}
+              min={0.5}
+              max={6}
+              step={0.1}
+              onChange={(value) => onEmaParams({ stopMultiplier: value })}
+            />
+            <Field
+              id="target-mult"
+              label="Target × ATR"
+              value={emaParams.takeProfitMultiplier}
+              min={0.5}
+              max={10}
+              step={0.1}
+              onChange={(value) => onEmaParams({ takeProfitMultiplier: value })}
+            />
+          </div>
+        )}
         <Separator className="my-4" />
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Buy the session the {params.fastPeriod}-day EMA closes above the {params.slowPeriod}-day EMA, if the prior
-          session finished at or below it. Exit on the first of a cross back down, a close at or below entry −{" "}
-          {params.stopMultiplier.toFixed(1)}×ATR({params.atrPeriod}), or a close at or above entry +{" "}
-          {params.takeProfitMultiplier.toFixed(1)}×ATR({params.atrPeriod}). Stop and target use the entry session’s ATR
-          and stay fixed. After a stop or take-profit, the next buy has to be a new cross.
-        </p>
+        {strategy === "sweep" ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Buy when the low takes out the prior {sweepParams.swingLookback}-session low, volume is at least{" "}
+            {sweepParams.volumeMultiple.toFixed(1)}× the prior {sweepParams.volumePeriod}-session average, and the close
+            finishes back above that low. Sell is the mirror at the prior high. The stop sits{" "}
+            {sweepParams.stopOffset.toFixed(2)} beyond the sweep wick. The target is{" "}
+            {sweepParams.takeProfitMultiple.toFixed(1)}× that risk. A later sweep leaves an open trade alone. After a
+            stop or take-profit, the next entry is a fresh sweep.
+          </p>
+        ) : (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Buy the session the {emaParams.fastPeriod}-day EMA closes above the {emaParams.slowPeriod}-day EMA, if the
+            prior session finished at or below it. Exit on the first of a cross back down, a close at or below entry −{" "}
+            {emaParams.stopMultiplier.toFixed(1)}×ATR({emaParams.atrPeriod}), or a close at or above entry +{" "}
+            {emaParams.takeProfitMultiplier.toFixed(1)}×ATR({emaParams.atrPeriod}). Stop and target use the entry
+            session’s ATR and stay fixed. After a stop or take-profit, the next buy has to be a new cross.
+          </p>
+        )}
       </section>
 
       <section className="rounded-xl border border-border bg-card p-4">
@@ -241,8 +374,9 @@ export function SidePanel({
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              A win is a closed signal whose exit close is above the entry close. The open signal, if any, is marked
-              unrealized and left out of the win rate.
+              {strategy === "sweep"
+                ? "A win is a closed long whose exit close is above the entry, or a closed short whose exit close is below the entry. The open signal is unrealized and left out of the win rate."
+                : "A win is a closed signal whose exit close is above the entry close. The open signal, if any, is marked unrealized and left out of the win rate."}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -265,14 +399,18 @@ export function SidePanel({
         </div>
         {summary?.open && summary.unrealized != null ? (
           <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-            <Badge variant="long" className="mr-2">
-              Long
+            <Badge variant={summary.open.direction === "short" ? "short" : "long"} className="mr-2">
+              {summary.open.direction === "short" ? "Short" : "Long"}
             </Badge>
             Unrealized {formatPct(summary.unrealized)} from {formatPrice(summary.open.entryPrice, currency)} on the
             entry close.
           </p>
         ) : summary ? (
-          <p className="mt-4 text-xs text-muted-foreground">Flat. Waiting for the next fresh cross.</p>
+          <p className="mt-4 text-xs text-muted-foreground">
+            Flat. Waiting for the next {strategy === "sweep" ? "fresh sweep" : "fresh cross"}.
+          </p>
+        ) : notice ? (
+          <p className="mt-4 text-xs leading-relaxed text-stop">{notice}</p>
         ) : (
           <p className="mt-4 text-xs text-muted-foreground">Stats appear once the daily bars load.</p>
         )}

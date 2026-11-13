@@ -24,6 +24,7 @@
   --color-ema-slow: #f0a202;
   --color-stop: #ff5d73;
   --color-target: #8eb6ff;
+  --color-swept: #e4c56a;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

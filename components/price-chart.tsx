@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { COLORS } from "@/lib/colors"
 import { formatNumber } from "@/lib/format"
-import type { EnrichedBar, RangeMode, SignalMarker, Trade } from "@/lib/types"
+import type { EnrichedBar, RangeMode, SignalMarker, StrategyId, Trade } from "@/lib/types"
 
 export type ChartModel = {
   symbol: string
@@ -14,6 +14,7 @@ export type ChartModel = {
   slowPeriod: number
   rangeMode: RangeMode
   focus: Trade | null
+  strategy: StrategyId
 }
 
 function markerColor(marker: SignalMarker): string {
@@ -22,6 +23,35 @@ function markerColor(marker: SignalMarker): string {
   if (marker.reason === "stop") return COLORS.stop
   if (marker.reason === "take_profit") return COLORS.target
   return "#ffd27a"
+}
+
+function markerAppearance(marker: SignalMarker, strategy: StrategyId): {
+  position: "aboveBar" | "belowBar"
+  shape: "arrowUp" | "arrowDown"
+  color: string
+} {
+  // The EMA book is long-only. Keep every label above the candle, as before.
+  if (strategy !== "sweep") {
+    return {
+      position: "aboveBar",
+      shape: marker.side === "entry" ? "arrowUp" : "arrowDown",
+      color: markerColor(marker),
+    }
+  }
+  const short = marker.direction === "short"
+  if (marker.side === "entry") {
+    return {
+      position: short ? "aboveBar" : "belowBar",
+      shape: short ? "arrowDown" : "arrowUp",
+      color: "#f4efe2",
+    }
+  }
+  // A short exit is a cover: arrow back up, under the bar. Long exits point down.
+  return {
+    position: short ? "belowBar" : "aboveBar",
+    shape: short ? "arrowUp" : "arrowDown",
+    color: markerColor(marker),
+  }
 }
 
 function visibleLogicalRange(model: ChartModel): { from: number; to: number } {
@@ -72,16 +102,25 @@ function Legend({ model }: { model: ChartModel }) {
         </span>
         Price
       </span>
-      <span className="inline-flex items-center gap-1.5">
-        <span className="h-0.5 w-4 rounded-full bg-ema-fast" />
-        EMA {model.fastPeriod}
-        {fast != null ? <span className="font-mono text-muted-foreground">{formatNumber(fast)}</span> : null}
-      </span>
-      <span className="inline-flex items-center gap-1.5">
-        <span className="h-0.5 w-4 rounded-full bg-ema-slow" />
-        EMA {model.slowPeriod}
-        {slow != null ? <span className="font-mono text-muted-foreground">{formatNumber(slow)}</span> : null}
-      </span>
+      {model.strategy === "sweep" ? (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-px w-4 border-t border-dotted border-swept" />
+          Swept
+        </span>
+      ) : (
+        <>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-0.5 w-4 rounded-full bg-ema-fast" />
+            EMA {model.fastPeriod}
+            {fast != null ? <span className="font-mono text-muted-foreground">{formatNumber(fast)}</span> : null}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-0.5 w-4 rounded-full bg-ema-slow" />
+            EMA {model.slowPeriod}
+            {slow != null ? <span className="font-mono text-muted-foreground">{formatNumber(slow)}</span> : null}
+          </span>
+        </>
+      )}
       <span className="inline-flex items-center gap-1.5">
         <span className="h-px w-4 border-t border-dashed border-stop" />
         Stop
@@ -163,6 +202,7 @@ export function PriceChart({ model }: { model: ChartModel }) {
         const markers = lc.createSeriesMarkers(candles, [])
         let stopLine: ReturnType<typeof candles.createPriceLine> | null = null
         let targetLine: ReturnType<typeof candles.createPriceLine> | null = null
+        let sweptLine: ReturnType<typeof candles.createPriceLine> | null = null
 
         const apply = () => {
           if (disposed) return
@@ -174,8 +214,9 @@ export function PriceChart({ model }: { model: ChartModel }) {
           candles.applyOptions({
             priceFormat: { type: "price", precision: digits, minMove: digits === 2 ? 0.01 : 0.0001 },
           })
-          fast.applyOptions({ title: `EMA ${current.fastPeriod}` })
-          slow.applyOptions({ title: `EMA ${current.slowPeriod}` })
+          const showEma = current.strategy !== "sweep"
+          fast.applyOptions({ title: showEma ? `EMA ${current.fastPeriod}` : "", visible: showEma })
+          slow.applyOptions({ title: showEma ? `EMA ${current.slowPeriod}` : "", visible: showEma })
           candles.setData(
             current.bars.map((bar) => ({
               time: bar.date,
@@ -195,15 +236,17 @@ export function PriceChart({ model }: { model: ChartModel }) {
             current.markers
               .slice()
               .sort((a, b) => a.date.localeCompare(b.date))
-              .map((marker) => ({
-                time: marker.date,
-                // Keep both labels above the high so the stop line and EMAs do not strike through the words.
-                position: "aboveBar" as const,
-                shape: marker.side === "entry" ? ("arrowUp" as const) : ("arrowDown" as const),
-                color: markerColor(marker),
-                text: marker.label,
-                size: 2,
-              })),
+              .map((marker) => {
+                const appearance = markerAppearance(marker, current.strategy)
+                return {
+                  time: marker.date,
+                  position: appearance.position,
+                  shape: appearance.shape,
+                  color: appearance.color,
+                  text: marker.label,
+                  size: 2,
+                }
+              }),
           )
           if (stopLine) {
             candles.removePriceLine(stopLine)
@@ -213,7 +256,26 @@ export function PriceChart({ model }: { model: ChartModel }) {
             candles.removePriceLine(targetLine)
             targetLine = null
           }
+          if (sweptLine) {
+            candles.removePriceLine(sweptLine)
+            sweptLine = null
+          }
           const levels = current.levels
+          if (
+            current.strategy === "sweep" &&
+            levels?.sweptLevel != null &&
+            Number.isFinite(levels.sweptLevel)
+          ) {
+            sweptLine = candles.createPriceLine({
+              price: levels.sweptLevel,
+              color: COLORS.swept,
+              lineWidth: 1,
+              lineStyle: lc.LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: "Swept",
+              axisLabelTextColor: COLORS.labelInk,
+            })
+          }
           if (levels && Number.isFinite(levels.stop) && Number.isFinite(levels.target)) {
             stopLine = candles.createPriceLine({
               price: levels.stop,

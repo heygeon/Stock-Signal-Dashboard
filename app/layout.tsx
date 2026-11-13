@@ -21,9 +21,9 @@ const serif = Newsreader({
 });
 
 export const metadata: Metadata = {
-  title: "Northline — daily crossover signals",
+  title: "Northline — daily signals",
   description:
-    "Plot EMA crossover signals with ATR stops and targets on US and Hong Kong stocks. Signals only — no orders.",
+    "Plot 20/50 EMA and volume-confirmed sweep signals on US and Hong Kong stocks. Signals only — no orders.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
