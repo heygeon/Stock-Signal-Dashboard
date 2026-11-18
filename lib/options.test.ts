@@ -3,9 +3,11 @@ import { describe, it } from "node:test"
 import { DEFAULT_DONCHIAN_PARAMS, generateDonchianSignals } from "./donchian.ts"
 import {
   DEFAULT_OPTIONS_OVERLAY,
+  OPTIONS_NO_OPEN_INTEREST,
   OVERLAY_SCOPE,
   OVERLAY_TITLE,
   contractFlagged,
+  evaluateOptionsChain,
   formatVolumeOi,
   optionsAccess,
   overlayBadge,
@@ -137,12 +139,32 @@ describe("options volume versus open interest", () => {
     assert.equal(readingOf([contract({ right: "call", volume: 1000, openInterest: 501 })]).tilt, "none")
   })
 
-  it("treats a reported open interest of 0 as 2× zero, and does not treat a missing print as zero", () => {
-    assert.equal(contractFlagged({ volume: 1000, openInterest: 0 }, DEFAULT_OPTIONS_OVERLAY), true)
-    assert.equal(formatVolumeOi(1000, 0), "∞")
-    assert.equal(contractFlagged({ volume: Number.NaN, openInterest: 0 }, DEFAULT_OPTIONS_OVERLAY), false)
+  it("treats a reported open interest of 0 as missing and does not flag it", () => {
+    assert.equal(contractFlagged({ volume: 5000, openInterest: 0 }, DEFAULT_OPTIONS_OVERLAY), false)
+    assert.equal(contractFlagged({ volume: 1000, openInterest: 0 }, { volumeOiMultiple: 2, minVolume: 0 }), false)
+    assert.equal(formatVolumeOi(1000, 0), "—")
+    assert.equal(contractFlagged({ volume: Number.NaN, openInterest: 400 }, DEFAULT_OPTIONS_OVERLAY), false)
     assert.equal(contractFlagged({ volume: 5000, openInterest: Number.NaN }, DEFAULT_OPTIONS_OVERLAY), false)
-    assert.equal(contractFlagged({ volume: 0, openInterest: 0 }, { volumeOiMultiple: 2, minVolume: 0 }), false)
+    const reading = readingOf([
+      contract({ right: "call", volume: 8000, openInterest: 0, strike: 230 }),
+      contract({ right: "put", volume: 9000, openInterest: 0, strike: 180 }),
+    ])
+    assert.equal(reading.flagged.length, 0)
+    assert.equal(reading.tilt, "none")
+    assert.equal(reading.callVolume, 0)
+    assert.equal(reading.putVolume, 0)
+  })
+
+  it("still flags a contract with positive open interest when volume clears the floor and the 2× multiple", () => {
+    assert.equal(contractFlagged({ volume: 1000, openInterest: 500 }, DEFAULT_OPTIONS_OVERLAY), true)
+    const reading = readingOf([
+      contract({ right: "call", volume: 5000, openInterest: 0, strike: 240 }),
+      contract({ right: "put", volume: 2000, openInterest: 400, strike: 180 }),
+    ])
+    assert.equal(reading.flagged.length, 1)
+    assert.equal(reading.flagged[0].openInterest, 400)
+    assert.equal(reading.flagged[0].volumeOi, 5)
+    assert.equal(reading.tilt, "bearish")
   })
 
   it("honors a tuned multiple and a tuned floor, and both are required", () => {
@@ -300,6 +322,41 @@ describe("options confirm and veto", () => {
     assert.equal(applied.decision?.effect, "volatility")
     assert.match(applied.decision?.note ?? "", /not a bullish or bearish/)
     assert.doesNotMatch(applied.decision?.note ?? "", /unusual/i)
+  })
+
+  it("skips a chain with only zero or missing open interest and does not confirm, veto, or label volatility", () => {
+    const contracts = [
+      contract({ right: "call", volume: 50000, openInterest: 0, strike: 230 }),
+      contract({ right: "put", volume: 80000, openInterest: 0, strike: 180 }),
+      contract({ right: "call", volume: Number.NaN, openInterest: Number.NaN, strike: 200 }),
+    ]
+    const evaluation = evaluateOptionsChain(contracts)
+    assert.equal(evaluation.status, "skipped")
+    if (evaluation.status !== "skipped") return
+    assert.equal(evaluation.reason, OPTIONS_NO_OPEN_INTEREST)
+    assert.doesNotMatch(evaluation.reason, /volatil/i)
+    const fresh = trade({ id: 1, entryIndex: 1, entryDate: "2024-01-03", stop: 6, target: 20 })
+    const result = book([fresh], 2)
+    const applied = stockBookWithOverlay(result, null)
+    assert.equal(applied.result, result)
+    assert.equal(applied.decision, null)
+    assert.equal(result.trades.length, 1)
+    assert.equal(result.trades[0].stop, 6)
+    assert.equal(overlayBadge("volatility") === evaluation.reason, false)
+  })
+
+  it("still evaluates a chain that has at least one positive open interest", () => {
+    const evaluation = evaluateOptionsChain([
+      contract({ right: "call", volume: 9000, openInterest: 0 }),
+      contract({ right: "call", volume: 1000, openInterest: 500 }),
+    ])
+    assert.equal(evaluation.status, "ready")
+    if (evaluation.status !== "ready") return
+    assert.equal(evaluation.reading.tilt, "bullish")
+    assert.equal(evaluation.reading.flagged.length, 1)
+    const fresh = trade({ id: 1, entryIndex: 0, entryDate: "2024-01-02" })
+    const applied = stockBookWithOverlay(book([fresh], 1), evaluation.reading)
+    assert.equal(applied.decision?.effect, "confirmed-long")
   })
 
   it("skips the overlay when options data is missing and does not invent a flag", () => {

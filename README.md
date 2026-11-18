@@ -110,16 +110,17 @@ The chart marks **Buy** and **Sell**, and a short exit as **Cover**. The stop an
 
 This is not a fifth strategy and not an options book. The 20/50 EMA, volume sweep, Donchian, and RSI rules above are unchanged, including their stops and targets. The overlay reads today’s US options chain only: a current Yahoo snapshot of volume, open interest, strike, expiry, and call or put. Implied volatility is shown when Yahoo sends it. This is a volume-versus-open-interest test. It is not an unusual-flow test, and it does not use a 5× 20-session average.
 
-Hong Kong names, including `0700.HK`, skip the overlay. Northline does not invent Hong Kong options prints. If the chain is missing, fails, or comes back with no usable contracts, the overlay is skipped and the stock strategies run unchanged. There is no shipped options cache to fall back on.
+Hong Kong names, including `0700.HK`, skip the overlay. Northline does not invent Hong Kong options prints. If the chain is missing, fails, or has no usable open interest, the overlay is skipped and the stock strategies run unchanged. There is no shipped options cache to fall back on.
 
 ### Flag
 
-A contract is one strike, expiry, and call or put. It flags when both of these are true:
+A contract is one strike, expiry, and call or put. It flags only when all of these are true:
 
 - Volume is greater than zero and at least 1,000 contracts. The floor is the “Minimum volume” control. The default is 1,000.
-- Volume is at least 2× open interest. The default multiple is 2, on the “Volume ≥ × open interest” control. The comparison allows `1e-9` of absolute slack so an exact multiple is not rejected by binary dust.
+- Open interest is greater than zero.
+- Volume is at least 2× that open interest. The default multiple is 2, on the “Volume ≥ × open interest” control. The comparison allows `1e-9` of absolute slack so an exact multiple is not rejected by binary dust.
 
-A contract with missing volume or missing open interest is dropped. It is not stored as zero. Open interest that Yahoo reports as 0 is kept: volume is then at least 2× zero, so the contract flags once it clears the floor.
+A contract with missing volume or missing open interest is dropped. It is not stored as zero. A reported open interest of 0 is treated the same way: the contract does not flag, and volume is not treated as at least 2× zero. If every contract is missing open interest or reports 0, nothing is left to evaluate, so the overlay is skipped. That skip does not confirm, veto, or label the tape a volatility event. A chain that still has at least one positive open interest is evaluated with the tilt and confirm/veto rules below.
 
 ### Tilt
 

@@ -196,8 +196,9 @@ export function OptionsOverlay({
             onChange={(value) => onParams({ minVolume: value })}
           />
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            Both have to hold. A reported open interest of 0 still passes the multiple once volume clears the floor.
-            Missing volume or open interest is dropped, not filled in as zero.
+            Volume has to clear the floor and be at least the multiple of open interest. Open interest must be
+            greater than zero. A reported open interest of 0 is treated as missing and does not flag. Missing volume
+            or open interest is not filled in as zero.
             {state.status === "ok"
               ? ""
               : " These controls wait for a US chain. They do not invent a print for this symbol."}

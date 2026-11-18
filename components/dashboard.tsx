@@ -13,9 +13,9 @@ import { DEFAULT_DONCHIAN_PARAMS, generateDonchianSignals } from "@/lib/donchian
 import { formatChange, formatDate, formatPct, formatPrice } from "@/lib/format"
 import {
   DEFAULT_OPTIONS_OVERLAY,
+  evaluateOptionsChain,
   optionsAccess,
   overlayBadge,
-  readOptionsOverlay,
   stockBookWithOverlay,
   type OptionContract,
   type OptionsOverlayParams,
@@ -309,12 +309,14 @@ export function Dashboard() {
   }, [quote, strategy, emaParams, sweepParams, donchianParams, rsiParams])
 
   // Confirm/veto lives outside the four strategy engines. A null reading
-  // (Hong Kong, a failed chain, or a chain that has not loaded) returns the
-  // strategy book unchanged. Definitions: lib/options.ts.
-  const reading = useMemo(() => {
+  // (Hong Kong, a failed chain, a chain that has not loaded, or a chain with
+  // no usable open interest) returns the strategy book unchanged.
+  // Definitions: lib/options.ts.
+  const evaluation = useMemo(() => {
     if (options.status !== "ok" || options.symbol !== symbol) return null
-    return readOptionsOverlay(options.contracts, overlayParams)
+    return evaluateOptionsChain(options.contracts, overlayParams)
   }, [options, symbol, overlayParams])
+  const reading = evaluation?.status === "ready" ? evaluation.reading : null
   const overlaid = useMemo(() => {
     if (!strategyResult) return null
     return stockBookWithOverlay(strategyResult, reading)
@@ -322,19 +324,23 @@ export function Dashboard() {
   const result = overlaid?.result ?? null
   const overlayDecision = overlaid?.decision ?? null
   const optionsPanel: OptionsPanelState = useMemo(() => {
-    if (options.status === "loading" || (options.status === "ok" && options.symbol !== symbol) || (options.status === "ok" && !reading)) {
+    if (options.status === "loading" || (options.status === "ok" && options.symbol !== symbol)) {
       return { status: "loading", symbol }
     }
     if (options.status === "skipped" || options.status === "unavailable") return options
+    if (evaluation?.status === "skipped") {
+      return { status: "skipped", symbol: options.symbol, reason: evaluation.reason }
+    }
+    if (!reading) return { status: "loading", symbol }
     return {
       status: "ok",
       symbol: options.symbol,
       asOf: options.asOf,
       fetchedAt: options.fetchedAt,
       contractCount: options.contracts.length,
-      reading: reading as NonNullable<typeof reading>,
+      reading,
     }
-  }, [options, symbol, reading])
+  }, [options, symbol, evaluation, reading])
   useEffect(() => {
     if (selectedId == null || !result) return
     if (!result.trades.some((trade) => trade.id === selectedId)) {

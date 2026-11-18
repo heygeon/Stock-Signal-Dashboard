@@ -12,13 +12,19 @@ import { normalizeSymbol } from "./symbols"
  * no unusual-flow test. Hong Kong names are skipped before any chain is read.
  *
  * Flag. A contract is one strike + expiry + call/put. It flags only when
- * both thresholds hold: volume is greater than zero, volume is at least
- * `minVolume` (default 1,000), and volume is at least `volumeOiMultiple`
- * times open interest (default 2). The multiple comparison allows 1e-9 of
- * absolute slack so an exact multiple is not rejected by binary dust. Missing
- * volume or missing open interest is not coerced to zero. Open interest that
- * the feed reports as 0 is real input: volume is then at least 2× zero, so
- * the contract can flag once it clears the floor.
+ * volume is greater than zero, volume is at least `minVolume` (default
+ * 1,000), open interest is greater than zero, and volume is at least
+ * `volumeOiMultiple` times that open interest (default 2). The multiple
+ * comparison allows 1e-9 of absolute slack so an exact multiple is not
+ * rejected by binary dust. Missing volume, missing open interest, and a
+ * reported open interest of 0 are the same: the contract is dropped and does
+ * not flag. Volume is never treated as at least 2× zero.
+ *
+ * If the chain has no usable open interest — every contract is missing it or
+ * reports 0, so nothing remains to evaluate — the overlay is skipped. That
+ * skip does not confirm, veto, or label a volatility event. A chain that
+ * still has at least one positive open interest is evaluated with the tilt
+ * and confirm/veto rules below.
  *
  * Tilt. Computed on the flagged set only. Unflagged contracts do not
  * contribute volume.
@@ -75,10 +81,13 @@ export const OVERLAY_SCOPE =
 export const OPTIONS_UNAVAILABLE =
   "The options chain was unavailable, so the overlay is skipped and the stock signals are unchanged."
 
+export const OPTIONS_NO_OPEN_INTEREST =
+  "This chain has no usable open interest, so the overlay is skipped and the stock signals are unchanged."
+
 export type OptionsTilt = "bullish" | "bearish" | "volatility" | "none"
 
 export type FlaggedContract = OptionContract & {
-  /** volume / open interest. Infinity when reported open interest is 0. */
+  /** volume / open interest. Flagged contracts have open interest above zero. */
   volumeOi: number
 }
 
@@ -129,17 +138,25 @@ export function optionsAccess(input: string): OptionsAccess {
 }
 
 /**
- * Both thresholds are required. Volume of 0 never flags. Non-finite volume
- * or open interest never flags, including a missing print passed through as
- * NaN. A non-positive multiple or a negative floor flags nothing.
+ * Usable open interest is finite and greater than zero. A reported 0 is
+ * missing data, same as a non-finite print.
+ */
+export function hasUsableOpenInterest(contract: { openInterest: number }): boolean {
+  return Number.isFinite(contract.openInterest) && contract.openInterest > 0
+}
+
+/**
+ * Volume must be greater than zero and at least the floor. Open interest
+ * must be greater than zero. Volume must be at least the multiple of that
+ * open interest. A non-positive multiple or a negative floor flags nothing.
  */
 export function contractFlagged(
   contract: { volume: number; openInterest: number },
   params: OptionsOverlayParams,
 ): boolean {
   const { volume, openInterest } = contract
-  if (!Number.isFinite(volume) || !Number.isFinite(openInterest)) return false
-  if (volume <= 0 || openInterest < 0) return false
+  if (!Number.isFinite(volume) || !hasUsableOpenInterest(contract)) return false
+  if (volume <= 0) return false
   if (!Number.isFinite(params.minVolume) || !Number.isFinite(params.volumeOiMultiple)) return false
   if (params.minVolume < 0 || params.volumeOiMultiple <= 0) return false
   if (volume + RATIO_SLACK < params.minVolume) return false
@@ -147,8 +164,7 @@ export function contractFlagged(
 }
 
 export function formatVolumeOi(volume: number, openInterest: number): string {
-  if (!Number.isFinite(volume) || !Number.isFinite(openInterest) || openInterest < 0) return "—"
-  if (openInterest === 0) return "∞"
+  if (!Number.isFinite(volume) || !Number.isFinite(openInterest) || openInterest <= 0) return "—"
   const ratio = volume / openInterest
   return Number.isFinite(ratio) ? ratio.toFixed(2) : "—"
 }
@@ -163,7 +179,7 @@ export function readOptionsOverlay(
     if (!contractFlagged(contract, params)) continue
     flagged.push({
       ...contract,
-      volumeOi: contract.openInterest === 0 ? Number.POSITIVE_INFINITY : contract.volume / contract.openInterest,
+      volumeOi: contract.volume / contract.openInterest,
     })
   }
   flagged.sort(
@@ -187,6 +203,25 @@ export function readOptionsOverlay(
   else if (putVolume > 0) tilt = "bearish"
 
   return { params, flagged, callVolume, putVolume, tilt }
+}
+
+export type OptionsChainEvaluation =
+  | { status: "ready"; reading: OptionsReading }
+  | { status: "skipped"; reason: string }
+
+/**
+ * A chain with no positive open interest is skipped. Callers must not run
+ * confirm/veto or attach a tilt, including a volatility label, in that case.
+ * One positive open interest is enough to evaluate the flagged set.
+ */
+export function evaluateOptionsChain(
+  contracts: OptionContract[],
+  params: OptionsOverlayParams = DEFAULT_OPTIONS_OVERLAY,
+): OptionsChainEvaluation {
+  if (!contracts.some(hasUsableOpenInterest)) {
+    return { status: "skipped", reason: OPTIONS_NO_OPEN_INTEREST }
+  }
+  return { status: "ready", reading: readOptionsOverlay(contracts, params) }
 }
 
 export function tiltLabel(tilt: OptionsTilt): string {
@@ -290,8 +325,9 @@ export function applyOptionsOverlay(result: SignalResult, reading: OptionsReadin
 
 /**
  * Missing or skipped overlay: the strategy result is returned unchanged.
- * Callers pass null when the chain was not loaded, failed, or was skipped
- * (including every Hong Kong name). That must not invent a flag.
+ * Callers pass null when the chain was not loaded, failed, skipped for a
+ * Hong Kong name, or skipped because it had no usable open interest. That
+ * must not invent a flag, a tilt, or a confirm/veto.
  */
 export function stockBookWithOverlay(result: SignalResult, reading: OptionsReading | null): OverlayApplication | { result: SignalResult; decision: null } {
   if (!reading) return { result, decision: null }
