@@ -2,6 +2,8 @@
 
 Daily signals for US and Hong Kong stocks. Northline plots four strategies on the same symbol: a 20/50 EMA crossover, a volume-confirmed liquidity sweep, a 20-day Donchian breakout, and an RSI(14) extreme reclaim. It draws entries, exits, stops, and targets on a candlestick chart. It does not place orders or simulate a brokerage fill.
 
+The four strategies below are unchanged. A separate US options overlay can confirm or block only a new entry on the latest bar. It is not a fifth trading book and it does not place an options trade.
+
 ## Run locally
 
 ```bash
@@ -104,9 +106,50 @@ Long and short, daily bars, same rules for US and Hong Kong names. Volume is not
 
 The chart marks **Buy** and **Sell**, and a short exit as **Cover**. The stop and target are the open trade, the trade you select, or the most recent trade when the book is flat. A long wins when the exit close is above the entry. A short wins when the exit close is below the entry.
 
+## Volume versus open interest
+
+This is not a fifth strategy and not an options book. The 20/50 EMA, volume sweep, Donchian, and RSI rules above are unchanged, including their stops and targets. The overlay reads today’s US options chain only: a current Yahoo snapshot of volume, open interest, strike, expiry, and call or put. Implied volatility is shown when Yahoo sends it. This is a volume-versus-open-interest test. It is not an unusual-flow test, and it does not use a 5× 20-session average.
+
+Hong Kong names, including `0700.HK`, skip the overlay. Northline does not invent Hong Kong options prints. If the chain is missing, fails, or comes back with no usable contracts, the overlay is skipped and the stock strategies run unchanged. There is no shipped options cache to fall back on.
+
+### Flag
+
+A contract is one strike, expiry, and call or put. It flags when both of these are true:
+
+- Volume is greater than zero and at least 1,000 contracts. The floor is the “Minimum volume” control. The default is 1,000.
+- Volume is at least 2× open interest. The default multiple is 2, on the “Volume ≥ × open interest” control. The comparison allows `1e-9` of absolute slack so an exact multiple is not rejected by binary dust.
+
+A contract with missing volume or missing open interest is dropped. It is not stored as zero. Open interest that Yahoo reports as 0 is kept: volume is then at least 2× zero, so the contract flags once it clears the floor.
+
+### Tilt
+
+Tilt uses the flagged set only. Volume on contracts that did not flag does not count.
+
+- Flagged call volume is the sum of volume on flagged calls. Flagged put volume is the sum on flagged puts.
+- Flagged call volume positive and flagged put volume 0: bullish (net call volume).
+- Flagged put volume positive and flagged call volume 0: bearish (net put volume).
+- Both positive: calls and puts both lit up. That is a volatility event, even when one side has more volume. It is not a bullish or bearish tilt.
+- Neither side flagged: no tilt.
+
+### Confirm and veto
+
+The overlay never opens a stock trade by itself. It never closes a trade the strategies already opened on an earlier bar, and it never moves a stop or a target.
+
+A fresh entry is an open trade whose entry bar is the latest bar in the history. Confirm and veto apply only to that entry. A long is any trade whose direction is not `short`, which is how the 20/50 EMA book records a long.
+
+- A bullish tilt confirms a new long. The entry stays, and the chart badges it. The stop and target are the strategy’s. A bullish tilt blocks a new short and removes that entry. It does not open a long to replace it.
+- A bearish tilt confirms a new short. It blocks a new long and removes that entry. It does not open a short to replace it.
+- A volatility event is shown and does not confirm or veto.
+- No tilt, a skipped chain, or a failed chain leaves the book as the strategy built it.
+- An open trade entered before the latest bar is left alone, whether the tilt agrees with it or not. A matching tilt does not re-badge that older entry as a new confirmation.
+
+The blotter, the chart markers, and the win-rate stats use the book after a veto. A blocked entry is not printed. A confirmation does not change the entry price, stop, or target.
+
 ## Data
 
 `/api/quotes?symbol=AAPL` proxies Yahoo Finance daily OHLCV so the browser is not blocked by CORS. `data/AAPL.json` and `data/0700.HK.json` are cached histories and include volume. If the live request fails, the desk keeps using that cache.
+
+`/api/options?symbol=AAPL` proxies today’s Yahoo Finance options chain. The options route starts the Yahoo session cookie and crumb that `/v7/finance/options` requires; the daily chart route does not send a crumb. It then calls the same Yahoo hosts. Each listed expiry is requested, and the assembled chain is cached in memory for about five minutes. A failed or empty chain does not fall back to a file. `0700.HK` is skipped before any options request.
 
 Refresh the cache (needs network):
 
