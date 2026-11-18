@@ -23,7 +23,7 @@ const serif = Newsreader({
 export const metadata: Metadata = {
   title: "Northline — daily signals",
   description:
-    "Plot 20/50 EMA and volume-confirmed sweep signals on US and Hong Kong stocks. Signals only — no orders.",
+    "Plot 20/50 EMA, volume-sweep, Donchian breakout, and RSI reclaim signals on US and Hong Kong stocks. Signals only — no orders.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

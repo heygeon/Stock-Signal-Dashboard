@@ -12,6 +12,10 @@ export type ChartModel = {
   levels: Trade | null
   fastPeriod: number
   slowPeriod: number
+  channelLookback: number
+  rsiPeriod: number
+  rsiOversold: number
+  rsiOverbought: number
   rangeMode: RangeMode
   focus: Trade | null
   strategy: StrategyId
@@ -31,7 +35,9 @@ function markerAppearance(marker: SignalMarker, strategy: StrategyId): {
   color: string
 } {
   // The EMA book is long-only. Keep every label above the candle, as before.
-  if (strategy !== "sweep") {
+  // Sweep, Donchian, and RSI are long and short: a short entry points down
+  // from above the bar, and a cover points back up from below it.
+  if (strategy === "ema") {
     return {
       position: "aboveBar",
       shape: marker.side === "entry" ? "arrowUp" : "arrowDown",
@@ -79,7 +85,10 @@ function visibleLogicalRange(model: ChartModel): { from: number; to: number } {
   return { from, to: last }
 }
 
-function latestValue(bars: EnrichedBar[], key: "emaFast" | "emaSlow"): number | null {
+function latestValue(
+  bars: EnrichedBar[],
+  key: "emaFast" | "emaSlow" | "channelHigh" | "channelLow",
+): number | null {
   for (let index = bars.length - 1; index >= 0; index -= 1) {
     const value = bars[index][key]
     if (value != null) return value
@@ -90,6 +99,8 @@ function latestValue(bars: EnrichedBar[], key: "emaFast" | "emaSlow"): number | 
 function Legend({ model }: { model: ChartModel }) {
   const fast = latestValue(model.bars, "emaFast")
   const slow = latestValue(model.bars, "emaSlow")
+  const channelHigh = latestValue(model.bars, "channelHigh")
+  const channelLow = latestValue(model.bars, "channelLow")
   return (
     <div
       className="pointer-events-none absolute top-3 left-3 z-10 flex max-w-[calc(100%-5rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border bg-card/90 px-3 py-2 text-[11px] text-foreground"
@@ -107,7 +118,8 @@ function Legend({ model }: { model: ChartModel }) {
           <span className="h-px w-4 border-t border-dotted border-swept" />
           Swept
         </span>
-      ) : (
+      ) : null}
+      {model.strategy === "ema" ? (
         <>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-0.5 w-4 rounded-full bg-ema-fast" />
@@ -120,7 +132,30 @@ function Legend({ model }: { model: ChartModel }) {
             {slow != null ? <span className="font-mono text-muted-foreground">{formatNumber(slow)}</span> : null}
           </span>
         </>
-      )}
+      ) : null}
+      {model.strategy === "donchian" ? (
+        <>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-0.5 w-4 rounded-full bg-ema-slow" />
+            High {model.channelLookback}
+            {channelHigh != null ? (
+              <span className="font-mono text-muted-foreground">{formatNumber(channelHigh)}</span>
+            ) : null}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-0.5 w-4 rounded-full bg-ema-fast" />
+            Low {model.channelLookback}
+            {channelLow != null ? (
+              <span className="font-mono text-muted-foreground">{formatNumber(channelLow)}</span>
+            ) : null}
+          </span>
+        </>
+      ) : null}
+      {model.strategy === "rsi" ? (
+        <span>
+          RSI {model.rsiPeriod} · {model.rsiOversold}/{model.rsiOverbought}
+        </span>
+      ) : null}
       <span className="inline-flex items-center gap-1.5">
         <span className="h-px w-4 border-t border-dashed border-stop" />
         Stop
@@ -214,9 +249,16 @@ export function PriceChart({ model }: { model: ChartModel }) {
           candles.applyOptions({
             priceFormat: { type: "price", precision: digits, minMove: digits === 2 ? 0.01 : 0.0001 },
           })
-          const showEma = current.strategy !== "sweep"
-          fast.applyOptions({ title: showEma ? `EMA ${current.fastPeriod}` : "", visible: showEma })
-          slow.applyOptions({ title: showEma ? `EMA ${current.slowPeriod}` : "", visible: showEma })
+          const showEma = current.strategy === "ema"
+          const showChannel = current.strategy === "donchian"
+          fast.applyOptions({
+            title: showEma ? `EMA ${current.fastPeriod}` : showChannel ? `Low ${current.channelLookback}` : "",
+            visible: showEma || showChannel,
+          })
+          slow.applyOptions({
+            title: showEma ? `EMA ${current.slowPeriod}` : showChannel ? `High ${current.channelLookback}` : "",
+            visible: showEma || showChannel,
+          })
           candles.setData(
             current.bars.map((bar) => ({
               time: bar.date,
@@ -226,11 +268,16 @@ export function PriceChart({ model }: { model: ChartModel }) {
               close: bar.close,
             })),
           )
+          const points = (read: (bar: EnrichedBar) => number | null | undefined) =>
+            current.bars.flatMap((bar) => {
+              const value = read(bar)
+              return value == null ? [] : [{ time: bar.date, value }]
+            })
           fast.setData(
-            current.bars.flatMap((bar) => (bar.emaFast == null ? [] : [{ time: bar.date, value: bar.emaFast }])),
+            showEma ? points((bar) => bar.emaFast) : showChannel ? points((bar) => bar.channelLow) : [],
           )
           slow.setData(
-            current.bars.flatMap((bar) => (bar.emaSlow == null ? [] : [{ time: bar.date, value: bar.emaSlow }])),
+            showEma ? points((bar) => bar.emaSlow) : showChannel ? points((bar) => bar.channelHigh) : [],
           )
           markers.setMarkers(
             current.markers
