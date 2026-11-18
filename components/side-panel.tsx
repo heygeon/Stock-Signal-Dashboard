@@ -1,6 +1,7 @@
 "use client"
 
 import { Info } from "lucide-react"
+import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,10 +9,12 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Slider } from "@/components/ui/slider"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { DEFAULT_DONCHIAN_PARAMS } from "@/lib/donchian"
 import { formatPct, formatPrice } from "@/lib/format"
+import { DEFAULT_RSI_PARAMS } from "@/lib/rsi"
 import { DEFAULT_PARAMS } from "@/lib/strategy"
 import { DEFAULT_SWEEP_PARAMS } from "@/lib/sweep"
-import type { StrategyId, StrategyParams, SweepParams, TradeSummary } from "@/lib/types"
+import type { DonchianParams, RsiParams, StrategyId, StrategyParams, SweepParams, TradeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const DEMOS = ["AAPL", "0700.HK"] as const
@@ -29,6 +32,10 @@ type FieldProps = {
 function Field({ id, label, value, min, max, step, onChange }: FieldProps) {
   const digits = step < 0.1 ? 2 : step < 1 ? 1 : 0
   const display = digits === 0 ? String(value) : value.toFixed(digits)
+  // A controlled input that commits every keystroke cannot spell "10" when the
+  // minimum is 2: the leading "1" is clamped before the "0" arrives. Keep the
+  // in-progress text local, and commit only a number that is already in range.
+  const [draft, setDraft] = useState<string | null>(null)
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -42,11 +49,21 @@ function Field({ id, label, value, min, max, step, onChange }: FieldProps) {
           min={min}
           max={max}
           step={step}
-          value={display}
+          value={draft ?? display}
           onWheel={(event) => event.currentTarget.blur()}
+          onBlur={() => {
+            if (draft != null && draft.trim() !== "") {
+              const next = Number(draft)
+              if (Number.isFinite(next)) onChange(next)
+            }
+            setDraft(null)
+          }}
           onChange={(event) => {
+            const raw = event.target.value
+            setDraft(raw)
             const next = event.target.valueAsNumber
-            if (Number.isFinite(next)) onChange(next)
+            if (!Number.isFinite(next) || next < min || next > max) return
+            onChange(next)
           }}
           className="h-8 w-[4.75rem] px-2 text-right font-mono text-sm"
         />
@@ -57,7 +74,10 @@ function Field({ id, label, value, min, max, step, onChange }: FieldProps) {
         max={max}
         step={step}
         value={[Math.min(max, Math.max(min, value))]}
-        onValueChange={([next]) => onChange(next)}
+        onValueChange={([next]) => {
+          setDraft(null)
+          onChange(next)
+        }}
       />
     </div>
   )
@@ -103,6 +123,40 @@ function sameSweep(a: SweepParams, b: SweepParams): boolean {
   )
 }
 
+function sameDonchian(a: DonchianParams, b: DonchianParams): boolean {
+  return (
+    a.channelLookback === b.channelLookback &&
+    a.volumePeriod === b.volumePeriod &&
+    a.volumeMultiple === b.volumeMultiple &&
+    a.atrPeriod === b.atrPeriod &&
+    a.stopMultiplier === b.stopMultiplier &&
+    a.takeProfitMultiplier === b.takeProfitMultiplier
+  )
+}
+
+function sameRsi(a: RsiParams, b: RsiParams): boolean {
+  return (
+    a.period === b.period &&
+    a.oversold === b.oversold &&
+    a.overbought === b.overbought &&
+    a.takeProfitMultiple === b.takeProfitMultiple &&
+    a.stopOffset === b.stopOffset
+  )
+}
+
+function atDefaults(
+  strategy: StrategyId,
+  emaParams: StrategyParams,
+  sweepParams: SweepParams,
+  donchianParams: DonchianParams,
+  rsiParams: RsiParams,
+): boolean {
+  if (strategy === "sweep") return sameSweep(sweepParams, DEFAULT_SWEEP_PARAMS)
+  if (strategy === "donchian") return sameDonchian(donchianParams, DEFAULT_DONCHIAN_PARAMS)
+  if (strategy === "rsi") return sameRsi(rsiParams, DEFAULT_RSI_PARAMS)
+  return sameParams(emaParams, DEFAULT_PARAMS)
+}
+
 export function StrategySwitch({
   strategy,
   onStrategy,
@@ -141,6 +195,26 @@ export function StrategySwitch({
       >
         Volume sweep
       </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant={strategy === "donchian" ? "default" : "outline"}
+        aria-pressed={strategy === "donchian"}
+        data-testid={labelled ? "strategy-donchian" : undefined}
+        onClick={() => onStrategy("donchian")}
+      >
+        Donchian
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant={strategy === "rsi" ? "default" : "outline"}
+        aria-pressed={strategy === "rsi"}
+        data-testid={labelled ? "strategy-rsi" : undefined}
+        onClick={() => onStrategy("rsi")}
+      >
+        RSI reclaim
+      </Button>
     </div>
   )
 }
@@ -152,6 +226,8 @@ export function SidePanel({
   strategy,
   emaParams,
   sweepParams,
+  donchianParams,
+  rsiParams,
   summary,
   currency,
   notice,
@@ -161,6 +237,8 @@ export function SidePanel({
   onStrategy,
   onEmaParams,
   onSweepParams,
+  onDonchianParams,
+  onRsiParams,
   onReset,
 }: {
   draft: string
@@ -169,6 +247,8 @@ export function SidePanel({
   strategy: StrategyId
   emaParams: StrategyParams
   sweepParams: SweepParams
+  donchianParams: DonchianParams
+  rsiParams: RsiParams
   summary: TradeSummary | null
   currency: string
   notice: string | null
@@ -178,6 +258,8 @@ export function SidePanel({
   onStrategy: (strategy: StrategyId) => void
   onEmaParams: (patch: Partial<StrategyParams>) => void
   onSweepParams: (patch: Partial<SweepParams>) => void
+  onDonchianParams: (patch: Partial<DonchianParams>) => void
+  onRsiParams: (patch: Partial<RsiParams>) => void
   onReset: () => void
 }) {
   const winRate = summary?.winRate == null ? "—" : `${Math.round(summary.winRate * 100)}%`
@@ -236,13 +318,118 @@ export function SidePanel({
             size="sm"
             variant="ghost"
             onClick={onReset}
-            disabled={strategy === "sweep" ? sameSweep(sweepParams, DEFAULT_SWEEP_PARAMS) : sameParams(emaParams, DEFAULT_PARAMS)}
+            disabled={atDefaults(strategy, emaParams, sweepParams, donchianParams, rsiParams)}
           >
             Reset
           </Button>
         </div>
         <StrategySwitch strategy={strategy} onStrategy={onStrategy} labelled className="mt-4" />
-        {strategy === "sweep" ? (
+        {strategy === "donchian" ? (
+          <div className="mt-4 space-y-4">
+            <Field
+              id="channel-lookback"
+              label="Channel lookback"
+              value={donchianParams.channelLookback}
+              min={2}
+              max={120}
+              step={1}
+              onChange={(value) => onDonchianParams({ channelLookback: value })}
+            />
+            <Field
+              id="donchian-volume-period"
+              label="Volume average"
+              value={donchianParams.volumePeriod}
+              min={2}
+              max={120}
+              step={1}
+              onChange={(value) => onDonchianParams({ volumePeriod: value })}
+            />
+            <Field
+              id="donchian-volume-multiple"
+              label="Volume × average"
+              value={donchianParams.volumeMultiple}
+              min={1}
+              max={5}
+              step={0.1}
+              onChange={(value) => onDonchianParams({ volumeMultiple: value })}
+            />
+            <Field
+              id="donchian-atr"
+              label="ATR period"
+              value={donchianParams.atrPeriod}
+              min={2}
+              max={50}
+              step={1}
+              onChange={(value) => onDonchianParams({ atrPeriod: value })}
+            />
+            <Field
+              id="donchian-stop"
+              label="Stop × ATR"
+              value={donchianParams.stopMultiplier}
+              min={0.5}
+              max={6}
+              step={0.1}
+              onChange={(value) => onDonchianParams({ stopMultiplier: value })}
+            />
+            <Field
+              id="donchian-target"
+              label="Target × ATR"
+              value={donchianParams.takeProfitMultiplier}
+              min={0.5}
+              max={10}
+              step={0.1}
+              onChange={(value) => onDonchianParams({ takeProfitMultiplier: value })}
+            />
+          </div>
+        ) : strategy === "rsi" ? (
+          <div className="mt-4 space-y-4">
+            <Field
+              id="rsi-period"
+              label="RSI period"
+              value={rsiParams.period}
+              min={2}
+              max={50}
+              step={1}
+              onChange={(value) => onRsiParams({ period: value })}
+            />
+            <Field
+              id="rsi-oversold"
+              label="Oversold"
+              value={rsiParams.oversold}
+              min={1}
+              max={Math.max(1, rsiParams.overbought - 1)}
+              step={1}
+              onChange={(value) => onRsiParams({ oversold: value })}
+            />
+            <Field
+              id="rsi-overbought"
+              label="Overbought"
+              value={rsiParams.overbought}
+              min={rsiParams.oversold + 1}
+              max={99}
+              step={1}
+              onChange={(value) => onRsiParams({ overbought: value })}
+            />
+            <Field
+              id="rsi-target"
+              label="Target × risk"
+              value={rsiParams.takeProfitMultiple}
+              min={0.5}
+              max={10}
+              step={0.1}
+              onChange={(value) => onRsiParams({ takeProfitMultiple: value })}
+            />
+            <Field
+              id="rsi-stop-offset"
+              label="Stop offset"
+              value={rsiParams.stopOffset}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(value) => onRsiParams({ stopOffset: value })}
+            />
+          </div>
+        ) : strategy === "sweep" ? (
           <div className="mt-4 space-y-4">
             <Field
               id="swing-lookback"
@@ -340,7 +527,26 @@ export function SidePanel({
           </div>
         )}
         <Separator className="my-4" />
-        {strategy === "sweep" ? (
+        {strategy === "donchian" ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Buy when the close finishes strictly above the prior {donchianParams.channelLookback}-session high and
+            volume is at least {donchianParams.volumeMultiple.toFixed(1)}× the prior{" "}
+            {donchianParams.volumePeriod}-session average. Sell is the mirror through the prior low. A touch of that
+            high or low is not a breakout.
+            The stop is {donchianParams.stopMultiplier.toFixed(1)}×ATR({donchianParams.atrPeriod}) from the entry close
+            and the target is {donchianParams.takeProfitMultiplier.toFixed(1)}× that same ATR. A later breakout leaves
+            an open trade alone. After a stop or take-profit, the next entry is a fresh breakout.
+          </p>
+        ) : strategy === "rsi" ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Buy when Wilder RSI({rsiParams.period}) was at or below {rsiParams.oversold} on the prior close and finishes
+            back above {rsiParams.oversold}. Sell when it was at or above {rsiParams.overbought} and closes back below{" "}
+            {rsiParams.overbought}. A close that only touches the line does not reclaim. The stop sits{" "}
+            {rsiParams.stopOffset.toFixed(2)} beyond the signal wick. The target is{" "}
+            {rsiParams.takeProfitMultiple.toFixed(1)}× that risk. A bar that would qualify both sides is skipped. A
+            later signal leaves an open trade alone.
+          </p>
+        ) : strategy === "sweep" ? (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Buy when the low takes out the prior {sweepParams.swingLookback}-session low, volume is at least{" "}
             {sweepParams.volumeMultiple.toFixed(1)}× the prior {sweepParams.volumePeriod}-session average, and the close
@@ -374,9 +580,9 @@ export function SidePanel({
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              {strategy === "sweep"
-                ? "A win is a closed long whose exit close is above the entry, or a closed short whose exit close is below the entry. The open signal is unrealized and left out of the win rate."
-                : "A win is a closed signal whose exit close is above the entry close. The open signal, if any, is marked unrealized and left out of the win rate."}
+              {strategy === "ema"
+                ? "A win is a closed signal whose exit close is above the entry close. The open signal, if any, is marked unrealized and left out of the win rate."
+                : "A win is a closed long whose exit close is above the entry, or a closed short whose exit close is below the entry. The open signal is unrealized and left out of the win rate."}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -407,7 +613,15 @@ export function SidePanel({
           </p>
         ) : summary ? (
           <p className="mt-4 text-xs text-muted-foreground">
-            Flat. Waiting for the next {strategy === "sweep" ? "fresh sweep" : "fresh cross"}.
+            Flat. Waiting for the next{" "}
+            {strategy === "sweep"
+              ? "fresh sweep"
+              : strategy === "donchian"
+                ? "fresh breakout"
+                : strategy === "rsi"
+                  ? "fresh reclaim"
+                  : "fresh cross"}
+            .
           </p>
         ) : notice ? (
           <p className="mt-4 text-xs leading-relaxed text-stop">{notice}</p>

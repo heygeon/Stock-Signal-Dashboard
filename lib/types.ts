@@ -19,7 +19,14 @@ export type Quote = {
   bars: Bar[]
 }
 
-export type StrategyId = "ema" | "sweep"
+export type StrategyId = "ema" | "sweep" | "donchian" | "rsi"
+
+export const STRATEGY_LABEL: Record<StrategyId, string> = {
+  ema: "20/50 EMA",
+  sweep: "Volume sweep",
+  donchian: "Donchian",
+  rsi: "RSI reclaim",
+}
 
 export type StrategyParams = {
   fastPeriod: number
@@ -37,15 +44,41 @@ export type SweepParams = {
   stopOffset: number
 }
 
+export type DonchianParams = {
+  channelLookback: number
+  volumePeriod: number
+  volumeMultiple: number
+  atrPeriod: number
+  stopMultiplier: number
+  takeProfitMultiplier: number
+}
+
+export type RsiParams = {
+  period: number
+  oversold: number
+  overbought: number
+  takeProfitMultiple: number
+  stopOffset: number
+}
+
 export type ExitReason = "ema_cross" | "stop" | "take_profit"
 
 export type EnrichedBar = Bar & {
   emaFast: number | null
   emaSlow: number | null
   atr: number | null
+  /** Prior Donchian high, current bar excluded. Set by that strategy only. */
+  channelHigh?: number | null
+  /** Prior Donchian low, current bar excluded. Set by that strategy only. */
+  channelLow?: number | null
+  /** Wilder RSI of this close. Set by the RSI strategy only. */
+  rsi?: number | null
 }
 
 export type TradeDirection = "long" | "short"
+
+/** Long, short, or a bar that qualifies both and must be skipped. */
+export type RsiSide = TradeDirection | "both" | null
 
 export type Trade = {
   id: number
@@ -63,6 +96,10 @@ export type Trade = {
   direction?: TradeDirection
   /** Level that was swept and reclaimed. Absent on EMA trades. */
   sweptLevel?: number | null
+  /** Prior channel extreme the Donchian close broke. Absent on other strategies. */
+  channelLevel?: number | null
+  /** Signal-bar wick the RSI stop sits beyond. Absent on other strategies. */
+  wickLevel?: number | null
 }
 
 export type SignalMarker = {

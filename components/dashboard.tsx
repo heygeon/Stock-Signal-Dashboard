@@ -8,11 +8,24 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { BUNDLED_QUOTES } from "@/lib/bundled"
+import { DEFAULT_DONCHIAN_PARAMS, generateDonchianSignals } from "@/lib/donchian"
 import { formatChange, formatDate, formatPct, formatPrice } from "@/lib/format"
+import { DEFAULT_RSI_PARAMS, generateRsiSignals } from "@/lib/rsi"
 import { DEFAULT_PARAMS, generateSignals, summarizeTrades } from "@/lib/strategy"
 import { DEFAULT_SWEEP_PARAMS, generateSweepSignals } from "@/lib/sweep"
 import { normalizeSymbol } from "@/lib/symbols"
-import type { Quote, RangeMode, StrategyId, StrategyParams, SweepParams, Trade, TradeSummary } from "@/lib/types"
+import {
+  STRATEGY_LABEL,
+  type DonchianParams,
+  type Quote,
+  type RangeMode,
+  type RsiParams,
+  type StrategyId,
+  type StrategyParams,
+  type SweepParams,
+  type Trade,
+  type TradeSummary,
+} from "@/lib/types"
 
 type LiveState = "loading" | "live" | "fallback"
 
@@ -44,6 +57,31 @@ function sanitizeSweep(current: SweepParams, patch: Partial<SweepParams>): Sweep
   return next
 }
 
+function sanitizeDonchian(current: DonchianParams, patch: Partial<DonchianParams>): DonchianParams {
+  const next: DonchianParams = { ...current, ...patch }
+  next.channelLookback = clamp(Math.round(next.channelLookback), 2, 120)
+  next.volumePeriod = clamp(Math.round(next.volumePeriod), 2, 120)
+  next.volumeMultiple = clamp(Math.round(next.volumeMultiple * 10) / 10, 1, 5)
+  next.atrPeriod = clamp(Math.round(next.atrPeriod), 2, 50)
+  next.stopMultiplier = clamp(Math.round(next.stopMultiplier * 10) / 10, 0.5, 6)
+  next.takeProfitMultiplier = clamp(Math.round(next.takeProfitMultiplier * 10) / 10, 0.5, 10)
+  return next
+}
+
+function sanitizeRsi(current: RsiParams, patch: Partial<RsiParams>): RsiParams {
+  const next: RsiParams = { ...current, ...patch }
+  next.period = clamp(Math.round(next.period), 2, 50)
+  next.takeProfitMultiple = clamp(Math.round(next.takeProfitMultiple * 10) / 10, 0.5, 10)
+  next.stopOffset = clamp(Math.round(next.stopOffset * 100) / 100, 0, 1)
+  next.oversold = clamp(Math.round(next.oversold), 1, 98)
+  next.overbought = clamp(Math.round(next.overbought), 2, 99)
+  if (next.oversold >= next.overbought) {
+    if (patch.oversold != null && patch.overbought == null) next.oversold = next.overbought - 1
+    else next.overbought = Math.min(99, next.oversold + 1)
+  }
+  return next
+}
+
 function levelsCaption(
   trade: Trade,
   currency: string,
@@ -52,12 +90,68 @@ function levelsCaption(
   strategy: StrategyId,
 ): string {
   const which = selected ? `Trade ${trade.id}` : isOpen ? "Open position" : "Most recent trade"
+  const entered = `entered ${formatDate(trade.entryDate)} at ${formatPrice(trade.entryPrice, currency)}`
+  const band = `stop ${formatPrice(trade.stop, currency)} · target ${formatPrice(trade.target, currency)}`
   if (strategy === "sweep") {
     const side = trade.direction === "short" ? "Short" : "Long"
     const swept = trade.sweptLevel == null ? "—" : formatPrice(trade.sweptLevel, currency)
-    return `${which} · ${side} · entered ${formatDate(trade.entryDate)} at ${formatPrice(trade.entryPrice, currency)} · swept ${swept} · stop ${formatPrice(trade.stop, currency)} · target ${formatPrice(trade.target, currency)}`
+    return `${which} · ${side} · ${entered} · swept ${swept} · ${band}`
   }
-  return `${which} · entered ${formatDate(trade.entryDate)} at ${formatPrice(trade.entryPrice, currency)} · stop ${formatPrice(trade.stop, currency)} · target ${formatPrice(trade.target, currency)} · entry ATR ${formatPrice(trade.atrAtEntry, currency)}`
+  if (strategy === "donchian") {
+    const side = trade.direction === "short" ? "Short" : "Long"
+    const broke = trade.channelLevel == null ? "" : ` · broke ${formatPrice(trade.channelLevel, currency)}`
+    return `${which} · ${side} · ${entered}${broke} · ${band} · entry ATR ${formatPrice(trade.atrAtEntry, currency)}`
+  }
+  if (strategy === "rsi") {
+    const side = trade.direction === "short" ? "Short" : "Long"
+    const wick = trade.wickLevel == null ? "" : ` · wick ${formatPrice(trade.wickLevel, currency)}`
+    return `${which} · ${side} · ${entered}${wick} · ${band}`
+  }
+  return `${which} · ${entered} · ${band} · entry ATR ${formatPrice(trade.atrAtEntry, currency)}`
+}
+
+function emptyLevels(strategy: StrategyId): string {
+  if (strategy === "sweep") return "No sweep in this window, so there is no swept level, stop, or target to draw."
+  if (strategy === "donchian") return "No breakout in this window, so there is no stop or target to draw."
+  if (strategy === "rsi") return "No RSI reclaim in this window, so there is no stop or target to draw."
+  return "No trade in this window, so there is no stop or target to draw."
+}
+
+function BookFootnote({ strategy }: { strategy: StrategyId }) {
+  if (strategy === "sweep") {
+    return (
+      <>
+        Sweep signals are judged on the daily close. A wick through the stop or target leaves the trade open. After a
+        stop or take-profit the book stays flat until the next fresh sweep, and a new sweep does not flip an open trade.
+        Prices come from{" "}
+      </>
+    )
+  }
+  if (strategy === "donchian") {
+    return (
+      <>
+        Donchian signals are judged on the daily close. A wick through the stop or target leaves the trade open. The
+        stop is checked before the target. After a stop or take-profit the book stays flat until a later bar breaks out
+        on its own, and an opposite breakout does not flip an open trade. Prices come from{" "}
+      </>
+    )
+  }
+  if (strategy === "rsi") {
+    return (
+      <>
+        RSI reclaims are judged on the daily close. A wick through the stop or target leaves the trade open. The stop
+        is checked before the target. A bar that would qualify both sides is skipped. After a stop or take-profit the
+        book stays flat until a later bar reclaims on its own, and an opposite signal does not flip an open trade.
+        Prices come from{" "}
+      </>
+    )
+  }
+  return (
+    <>
+      Signals are judged on the daily close. A wick through the stop or target does not exit. Same-day conflicts resolve
+      in order: EMA cross, then stop, then take-profit. Prices come from{" "}
+    </>
+  )
 }
 
 function bookState(summary: TradeSummary | null): "Long" | "Short" | "Flat" {
@@ -76,6 +170,8 @@ export function Dashboard() {
   const [strategy, setStrategy] = useState<StrategyId>("ema")
   const [emaParams, setEmaParams] = useState<StrategyParams>(DEFAULT_PARAMS)
   const [sweepParams, setSweepParams] = useState<SweepParams>(DEFAULT_SWEEP_PARAMS)
+  const [donchianParams, setDonchianParams] = useState<DonchianParams>(DEFAULT_DONCHIAN_PARAMS)
+  const [rsiParams, setRsiParams] = useState<RsiParams>(DEFAULT_RSI_PARAMS)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [rangeMode, setRangeMode] = useState<RangeMode>("recent")
 
@@ -119,8 +215,10 @@ export function Dashboard() {
   const result = useMemo(() => {
     if (!quote) return null
     if (strategy === "sweep") return generateSweepSignals(quote.bars, sweepParams)
+    if (strategy === "donchian") return generateDonchianSignals(quote.bars, donchianParams)
+    if (strategy === "rsi") return generateRsiSignals(quote.bars, rsiParams)
     return generateSignals(quote.bars, emaParams)
-  }, [quote, strategy, emaParams, sweepParams])
+  }, [quote, strategy, emaParams, sweepParams, donchianParams, rsiParams])
   const summary = useMemo(() => {
     if (!result || !quote || quote.bars.length === 0 || result.error) return null
     return summarizeTrades(result.trades, quote.bars[quote.bars.length - 1].close)
@@ -138,11 +236,27 @@ export function Dashboard() {
       levels: picked ?? result.levelsTrade,
       fastPeriod: emaParams.fastPeriod,
       slowPeriod: emaParams.slowPeriod,
+      channelLookback: donchianParams.channelLookback,
+      rsiPeriod: rsiParams.period,
+      rsiOversold: rsiParams.oversold,
+      rsiOverbought: rsiParams.overbought,
       rangeMode,
       focus: rangeMode === "trade" ? picked : null,
       strategy,
     }
-  }, [quote, result, selectedId, strategy, emaParams.fastPeriod, emaParams.slowPeriod, rangeMode])
+  }, [
+    quote,
+    result,
+    selectedId,
+    strategy,
+    emaParams.fastPeriod,
+    emaParams.slowPeriod,
+    donchianParams.channelLookback,
+    rsiParams.period,
+    rsiParams.oversold,
+    rsiParams.overbought,
+    rangeMode,
+  ])
 
   function selectSymbol(raw: string) {
     const next = normalizeSymbol(raw)
@@ -179,6 +293,27 @@ export function Dashboard() {
     setRangeMode("recent")
   }
 
+  function updateDonchianParams(patch: Partial<DonchianParams>) {
+    setDonchianParams((current) => sanitizeDonchian(current, patch))
+    setSelectedId(null)
+    setRangeMode("recent")
+  }
+
+  function updateRsiParams(patch: Partial<RsiParams>) {
+    setRsiParams((current) => sanitizeRsi(current, patch))
+    setSelectedId(null)
+    setRangeMode("recent")
+  }
+
+  function resetParams() {
+    if (strategy === "sweep") setSweepParams(DEFAULT_SWEEP_PARAMS)
+    else if (strategy === "donchian") setDonchianParams(DEFAULT_DONCHIAN_PARAMS)
+    else if (strategy === "rsi") setRsiParams(DEFAULT_RSI_PARAMS)
+    else setEmaParams(DEFAULT_PARAMS)
+    setSelectedId(null)
+    setRangeMode("recent")
+  }
+
   function selectStrategy(next: StrategyId) {
     setStrategy(next)
     setSelectedId(null)
@@ -190,12 +325,19 @@ export function Dashboard() {
   const change = lastBar && prevBar ? lastBar.close - prevBar.close : null
   const showingQuote = quote && quote.symbol === symbol
   const sweepWarmup = Math.max(sweepParams.swingLookback, sweepParams.volumePeriod) + 1
+  const donchianWarmup =
+    Math.max(donchianParams.channelLookback, donchianParams.volumePeriod, donchianParams.atrPeriod - 1) + 1
+  const rsiWarmup = rsiParams.period + 2
   const historyShort =
     showingQuote && strategy === "ema" && quote.bars.length < emaParams.slowPeriod + 2
       ? `The slow EMA needs ${emaParams.slowPeriod} sessions. This history has ${quote.bars.length}.`
       : showingQuote && strategy === "sweep" && quote.bars.length < sweepWarmup
         ? `The sweep needs ${sweepWarmup} sessions. This history has ${quote.bars.length}.`
-        : null
+        : showingQuote && strategy === "donchian" && quote.bars.length < donchianWarmup
+          ? `The Donchian breakout needs ${donchianWarmup} sessions. This history has ${quote.bars.length}.`
+          : showingQuote && strategy === "rsi" && quote.bars.length < rsiWarmup
+            ? `RSI(${rsiParams.period}) needs ${rsiWarmup} sessions before a reclaim can print. This history has ${quote.bars.length}.`
+            : null
   const book = bookState(showingQuote ? summary : null)
 
   return (
@@ -209,8 +351,8 @@ export function Dashboard() {
               <Badge variant="outline">Signals only</Badge>
             </div>
             <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-              Daily signals for US and Hong Kong names. Compare the 20/50 EMA cross and a volume-confirmed sweep
-              on the same symbol. Entries, stops, and targets only.
+              Daily signals for US and Hong Kong names. Compare the 20/50 EMA cross, a volume-confirmed sweep, a
+              Donchian breakout, and an RSI reclaim on the same symbol. Entries, stops, and targets only.
             </p>
           </div>
           <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">No broker · no fills</p>
@@ -226,6 +368,8 @@ export function Dashboard() {
             strategy={strategy}
             emaParams={emaParams}
             sweepParams={sweepParams}
+            donchianParams={donchianParams}
+            rsiParams={rsiParams}
             summary={showingQuote ? summary : null}
             currency={quote?.currency ?? "USD"}
             notice={showingQuote ? result?.error ?? null : null}
@@ -235,12 +379,9 @@ export function Dashboard() {
             onStrategy={selectStrategy}
             onEmaParams={updateEmaParams}
             onSweepParams={updateSweepParams}
-            onReset={() => {
-              if (strategy === "sweep") setSweepParams(DEFAULT_SWEEP_PARAMS)
-              else setEmaParams(DEFAULT_PARAMS)
-              setSelectedId(null)
-              setRangeMode("recent")
-            }}
+            onDonchianParams={updateDonchianParams}
+            onRsiParams={updateRsiParams}
+            onReset={resetParams}
           />
         </aside>
 
@@ -258,7 +399,7 @@ export function Dashboard() {
                       {book}
                     </Badge>
                     <Badge variant="outline" data-testid="active-strategy">
-                      {strategy === "sweep" ? "Volume sweep" : "20/50 EMA"}
+                      {STRATEGY_LABEL[strategy]}
                     </Badge>
                     <span className="truncate text-sm text-muted-foreground">{quote.shortName}</span>
                   </div>
@@ -287,7 +428,7 @@ export function Dashboard() {
                     </div>
                   ) : null}
                   <div className="mt-3 flex justify-end">
-                    <StrategySwitch strategy={strategy} onStrategy={selectStrategy} className="w-56" />
+                    <StrategySwitch strategy={strategy} onStrategy={selectStrategy} className="w-full max-w-[18rem]" />
                   </div>
                   <div className="mt-2 flex justify-end gap-1">
                     <Button
@@ -330,9 +471,7 @@ export function Dashboard() {
                   </p>
                 ) : (
                   <p>
-                    {strategy === "sweep"
-                      ? "No sweep in this window, so there is no swept level, stop, or target to draw."
-                      : "No trade in this window, so there is no stop or target to draw."}
+                    {emptyLevels(strategy)}
                     {historyShort ? ` ${historyShort}` : ""}
                   </p>
                 )}
@@ -383,18 +522,7 @@ export function Dashboard() {
       </main>
 
       <footer className="mx-auto max-w-[1440px] px-4 pt-2 pb-8 text-xs leading-relaxed text-muted-foreground lg:px-6">
-        {strategy === "sweep" ? (
-          <>
-            Sweep signals are judged on the daily close. A wick through the stop or target leaves the trade open. After
-            a stop or take-profit the book stays flat until the next fresh sweep, and a new sweep does not flip an open
-            trade. Prices come from{" "}
-          </>
-        ) : (
-          <>
-            Signals are judged on the daily close. A wick through the stop or target does not exit. Same-day conflicts
-            resolve in order: EMA cross, then stop, then take-profit. Prices come from{" "}
-          </>
-        )}
+        <BookFootnote strategy={strategy} />
         <a
           className="underline decoration-border underline-offset-2 hover:text-foreground"
           href="https://finance.yahoo.com/"

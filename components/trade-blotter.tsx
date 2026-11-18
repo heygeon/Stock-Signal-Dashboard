@@ -32,12 +32,16 @@ export function TradeBlotter({
   strategy: StrategyId
   emptyMessage?: string
 }) {
-  const sweep = strategy === "sweep"
+  const directional = strategy !== "ema"
   const empty =
     emptyMessage ??
-    (sweep
+    (strategy === "sweep"
       ? "No volume-confirmed sweep in this window. A session has to take out the prior swing, close back through that level, and do it on at least the volume multiple."
-      : "No fresh crossover in this window. The fast EMA has to finish a session at or below the slow EMA, then close above it.")
+      : strategy === "donchian"
+        ? "No volume-confirmed Donchian breakout in this window. The close has to finish strictly beyond the prior channel, on at least the volume multiple."
+        : strategy === "rsi"
+          ? "No RSI reclaim in this window. RSI has to finish a session at or beyond the line, then close back through it."
+          : "No fresh crossover in this window. The fast EMA has to finish a session at or below the slow EMA, then close above it.")
   return (
     <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-card">
       <div className="flex flex-wrap items-end justify-between gap-2 border-b border-border px-4 py-3">
@@ -52,10 +56,10 @@ export function TradeBlotter({
         <p className="px-4 py-8 text-sm text-muted-foreground">{empty}</p>
       ) : (
         <div className="blotter-scroll overflow-x-auto">
-          <table className={cn("w-full border-collapse text-sm", sweep ? "min-w-[1080px]" : "min-w-[980px]")}>
+          <table className={cn("w-full border-collapse text-sm", directional ? "min-w-[1080px]" : "min-w-[980px]")}>
             <caption className="sr-only">
-              {sweep
-                ? "Signal trades with side, entry, exit, swept level, stop, target, and close-to-close return."
+              {directional
+                ? "Signal trades with side, entry, exit, stop, target, and close-to-close return."
                 : "Signal trades with entry, exit, reason, stop, target, and close-to-close return."}
             </caption>
             <thead>
@@ -63,7 +67,7 @@ export function TradeBlotter({
                 <th className="px-4 py-2 font-medium" scope="col">
                   #
                 </th>
-                {sweep ? (
+                {directional ? (
                   <th className="px-3 py-2 font-medium" scope="col">
                     Side
                   </th>
@@ -75,7 +79,7 @@ export function TradeBlotter({
                   Price
                 </th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">
-                  {sweep ? "Swept" : "ATR"}
+                  {strategy === "sweep" ? "Swept" : strategy === "rsi" ? "Wick" : "ATR"}
                 </th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">
                   Stop
@@ -129,7 +133,7 @@ export function TradeBlotter({
                       {trade.id}
                       {onChart ? <span className="ml-2 text-primary">On chart</span> : null}
                     </td>
-                    {sweep ? (
+                    {directional ? (
                       <td className="px-3 py-2.5">
                         <Badge variant={short ? "short" : "long"}>{short ? "Short" : "Long"}</Badge>
                       </td>
@@ -137,11 +141,15 @@ export function TradeBlotter({
                     <td className="px-3 py-2.5 font-mono text-xs">{formatDate(trade.entryDate)}</td>
                     <td className="px-3 py-2.5 text-right font-mono">{formatPrice(trade.entryPrice, currency)}</td>
                     <td className="px-3 py-2.5 text-right font-mono">
-                      {sweep
+                      {strategy === "sweep"
                         ? trade.sweptLevel == null
                           ? "—"
                           : formatPrice(trade.sweptLevel, currency)
-                        : formatPrice(trade.atrAtEntry, currency)}
+                        : strategy === "rsi"
+                          ? trade.wickLevel == null
+                            ? "—"
+                            : formatPrice(trade.wickLevel, currency)
+                          : formatPrice(trade.atrAtEntry, currency)}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-stop">{formatPrice(trade.stop, currency)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-target">
