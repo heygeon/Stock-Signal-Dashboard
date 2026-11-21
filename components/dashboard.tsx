@@ -7,9 +7,20 @@ import { TradeBlotter } from "@/components/trade-blotter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { OptionsOverlay, type OptionsPanelState } from "@/components/options-overlay"
 import { BUNDLED_QUOTES } from "@/lib/bundled"
 import { DEFAULT_DONCHIAN_PARAMS, generateDonchianSignals } from "@/lib/donchian"
 import { formatChange, formatDate, formatPct, formatPrice } from "@/lib/format"
+import {
+  DEFAULT_OPTIONS_OVERLAY,
+  evaluateOptionsChain,
+  optionsAccess,
+  overlayBadge,
+  stockBookWithOverlay,
+  type OptionContract,
+  type OptionsOverlayParams,
+  type OverlayEffect,
+} from "@/lib/options"
 import { DEFAULT_RSI_PARAMS, generateRsiSignals } from "@/lib/rsi"
 import { DEFAULT_PARAMS, generateSignals, summarizeTrades } from "@/lib/strategy"
 import { DEFAULT_SWEEP_PARAMS, generateSweepSignals } from "@/lib/sweep"
@@ -154,6 +165,26 @@ function BookFootnote({ strategy }: { strategy: StrategyId }) {
   )
 }
 
+function sanitizeOverlay(current: OptionsOverlayParams, patch: Partial<OptionsOverlayParams>): OptionsOverlayParams {
+  const next: OptionsOverlayParams = { ...current, ...patch }
+  next.volumeOiMultiple = clamp(Math.round(next.volumeOiMultiple * 10) / 10, 1, 10)
+  next.minVolume = clamp(Math.round(next.minVolume), 0, 10000)
+  return next
+}
+
+type OptionsLoad =
+  | { status: "loading" }
+  | { status: "skipped"; symbol: string; reason: string }
+  | { status: "unavailable"; symbol: string; reason: string }
+  | { status: "ok"; symbol: string; asOf: string | null; fetchedAt: string; contracts: OptionContract[] }
+
+function overlayBadgeVariant(effect: OverlayEffect): "long" | "short" | "stop" | "outline" {
+  if (effect === "confirmed-long") return "long"
+  if (effect === "confirmed-short") return "short"
+  if (effect === "vetoed-long" || effect === "vetoed-short") return "stop"
+  return "outline"
+}
+
 function bookState(summary: TradeSummary | null): "Long" | "Short" | "Flat" {
   if (!summary?.open) return "Flat"
   return summary.open.direction === "short" ? "Short" : "Long"
@@ -174,6 +205,8 @@ export function Dashboard() {
   const [rsiParams, setRsiParams] = useState<RsiParams>(DEFAULT_RSI_PARAMS)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [rangeMode, setRangeMode] = useState<RangeMode>("recent")
+  const [options, setOptions] = useState<OptionsLoad>({ status: "loading" })
+  const [overlayParams, setOverlayParams] = useState<OptionsOverlayParams>(DEFAULT_OPTIONS_OVERLAY)
 
   useEffect(() => {
     const requested = symbol
@@ -209,16 +242,113 @@ export function Dashboard() {
   }, [symbol, reloadKey])
 
   useEffect(() => {
+    const requested = symbol
+    const access = optionsAccess(requested)
+    if (access.kind !== "us") {
+      setOptions(
+        access.kind === "hk"
+          ? { status: "skipped", symbol: access.symbol, reason: access.reason }
+          : { status: "unavailable", symbol: requested, reason: access.reason },
+      )
+      return
+    }
+
+    const controller = new AbortController()
+    setOptions({ status: "loading" })
+    fetch(`/api/options?symbol=${encodeURIComponent(access.symbol)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const body = (await response.json()) as {
+          status?: string
+          symbol?: string
+          reason?: string
+          asOf?: string | null
+          fetchedAt?: string
+          contracts?: OptionContract[]
+        }
+        if (controller.signal.aborted) return
+        if (body.status === "ok" && body.symbol && Array.isArray(body.contracts)) {
+          setOptions({
+            status: "ok",
+            symbol: body.symbol,
+            asOf: body.asOf ?? null,
+            fetchedAt: body.fetchedAt || new Date().toISOString(),
+            contracts: body.contracts,
+          })
+          return
+        }
+        const reason =
+          body.reason || "The options chain was unavailable, so the overlay is skipped and the stock signals are unchanged."
+        setOptions(
+          body.status === "skipped"
+            ? { status: "skipped", symbol: body.symbol || access.symbol, reason }
+            : { status: "unavailable", symbol: body.symbol || access.symbol, reason },
+        )
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return
+        const reason =
+          error instanceof Error && error.name === "AbortError"
+            ? null
+            : "The options chain was unavailable, so the overlay is skipped and the stock signals are unchanged."
+        if (!reason) return
+        setOptions({ status: "unavailable", symbol: access.symbol, reason })
+      })
+    return () => controller.abort()
+  }, [symbol, reloadKey])
+
+  useEffect(() => {
     document.title = `${symbol} signals · Northline`
   }, [symbol])
 
-  const result = useMemo(() => {
+  const strategyResult = useMemo(() => {
     if (!quote) return null
     if (strategy === "sweep") return generateSweepSignals(quote.bars, sweepParams)
     if (strategy === "donchian") return generateDonchianSignals(quote.bars, donchianParams)
     if (strategy === "rsi") return generateRsiSignals(quote.bars, rsiParams)
     return generateSignals(quote.bars, emaParams)
   }, [quote, strategy, emaParams, sweepParams, donchianParams, rsiParams])
+
+  // Confirm/veto lives outside the four strategy engines. A null reading
+  // (Hong Kong, a failed chain, a chain that has not loaded, or a chain with
+  // no usable open interest) returns the strategy book unchanged.
+  // Definitions: lib/options.ts.
+  const evaluation = useMemo(() => {
+    if (options.status !== "ok" || options.symbol !== symbol) return null
+    return evaluateOptionsChain(options.contracts, overlayParams)
+  }, [options, symbol, overlayParams])
+  const reading = evaluation?.status === "ready" ? evaluation.reading : null
+  const overlaid = useMemo(() => {
+    if (!strategyResult) return null
+    return stockBookWithOverlay(strategyResult, reading)
+  }, [strategyResult, reading])
+  const result = overlaid?.result ?? null
+  const overlayDecision = overlaid?.decision ?? null
+  const optionsPanel: OptionsPanelState = useMemo(() => {
+    if (options.status === "loading" || (options.status === "ok" && options.symbol !== symbol)) {
+      return { status: "loading", symbol }
+    }
+    if (options.status === "skipped" || options.status === "unavailable") return options
+    if (evaluation?.status === "skipped") {
+      return { status: "skipped", symbol: options.symbol, reason: evaluation.reason }
+    }
+    if (!reading) return { status: "loading", symbol }
+    return {
+      status: "ok",
+      symbol: options.symbol,
+      asOf: options.asOf,
+      fetchedAt: options.fetchedAt,
+      contractCount: options.contracts.length,
+      reading,
+    }
+  }, [options, symbol, evaluation, reading])
+  useEffect(() => {
+    if (selectedId == null || !result) return
+    if (!result.trades.some((trade) => trade.id === selectedId)) {
+      setSelectedId(null)
+      setRangeMode("recent")
+    }
+  }, [result, selectedId])
+
   const summary = useMemo(() => {
     if (!result || !quote || quote.bars.length === 0 || result.error) return null
     return summarizeTrades(result.trades, quote.bars[quote.bars.length - 1].close)
@@ -305,6 +435,10 @@ export function Dashboard() {
     setRangeMode("recent")
   }
 
+  function updateOverlay(patch: Partial<OptionsOverlayParams>) {
+    setOverlayParams((current) => sanitizeOverlay(current, patch))
+  }
+
   function resetParams() {
     if (strategy === "sweep") setSweepParams(DEFAULT_SWEEP_PARAMS)
     else if (strategy === "donchian") setDonchianParams(DEFAULT_DONCHIAN_PARAMS)
@@ -352,7 +486,8 @@ export function Dashboard() {
             </div>
             <p className="mt-2 max-w-xl text-sm text-muted-foreground">
               Daily signals for US and Hong Kong names. Compare the 20/50 EMA cross, a volume-confirmed sweep, a
-              Donchian breakout, and an RSI reclaim on the same symbol. Entries, stops, and targets only.
+              Donchian breakout, and an RSI reclaim on the same symbol. A US volume-versus-open-interest overlay can
+              confirm or block a new entry. It is not a separate book.
             </p>
           </div>
           <p className="font-mono text-[11px] tracking-[0.16em] text-muted-foreground uppercase">No broker · no fills</p>
@@ -386,6 +521,7 @@ export function Dashboard() {
         </aside>
 
         <div className="order-1 flex min-w-0 flex-col gap-4 lg:order-2">
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
           {showingQuote && lastBar && model ? (
             <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
@@ -401,6 +537,14 @@ export function Dashboard() {
                     <Badge variant="outline" data-testid="active-strategy">
                       {STRATEGY_LABEL[strategy]}
                     </Badge>
+                    {overlayDecision && overlayBadge(overlayDecision.effect) ? (
+                      <Badge
+                        variant={overlayBadgeVariant(overlayDecision.effect)}
+                        data-testid="options-badge"
+                      >
+                        {overlayBadge(overlayDecision.effect)}
+                      </Badge>
+                    ) : null}
                     <span className="truncate text-sm text-muted-foreground">{quote.shortName}</span>
                   </div>
                   <p className="mt-1 font-mono text-[11px] text-muted-foreground">
@@ -497,6 +641,14 @@ export function Dashboard() {
               )}
             </section>
           )}
+            <OptionsOverlay
+              state={optionsPanel}
+              params={overlayParams}
+              decision={overlayDecision}
+              onParams={updateOverlay}
+              onReset={() => setOverlayParams(DEFAULT_OPTIONS_OVERLAY)}
+            />
+          </div>
 
           {showingQuote && result && lastBar ? (
             <TradeBlotter
@@ -531,7 +683,10 @@ export function Dashboard() {
         >
           Yahoo Finance
         </a>
-        . Northline does not place orders or simulate a broker fill.
+        . Northline does not place orders or simulate a broker fill. The volume-versus-open-interest overlay reads
+        today&apos;s US chain only. A matching tilt confirms a new entry on the latest bar. A conflicting tilt removes
+        that entry and does not open the other side. A volatility event, a missing chain, or a Hong Kong name leaves
+        the stock book unchanged. Open trades from earlier sessions keep their stops and targets.
       </footer>
     </TooltipProvider>
   )
